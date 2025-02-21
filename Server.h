@@ -19,8 +19,8 @@ private:
 	void handleClientMessage(SOCKET clientSocket);
 	void saveChatHistory(const std::string& sender, const std::string& receiver, const std::string& message);
 	void sendChat(SOCKET client, const std::string& sender, const std::string& receiver, const std::string& message);
-	void sendChat(SOCKET client, const std::string& sender, const std::string& message);
-	void sendUserListUpdate();
+	void sendUsersListUpdate();
+	void sendUserList(SOCKET client);
 	void removeClient(SOCKET clientSocket);
 
 	std::string fiveNumLen(int num);
@@ -28,6 +28,8 @@ private:
 	std::string twoNumLen(int num);
 
 	SOCKET findClientSocketByUsername(const std::string& username);
+
+	bool isSocketDisconnected(SOCKET socket);
 
 	std::mutex clientsMutex;
 	std::map<SOCKET, std::string> clients;

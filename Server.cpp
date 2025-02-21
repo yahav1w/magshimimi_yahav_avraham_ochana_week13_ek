@@ -9,9 +9,12 @@
 #include <condition_variable>
 #include <sstream>
 #include <iomanip>
+
 std::condition_variable cv;
+
 //the length of &MAGSH_MESSAGE&&Author&
 #define MSG_LEN_START 23
+
 Server::Server()
 {
 
@@ -91,11 +94,15 @@ void Server::clientHandler(SOCKET clientSocket)
 				std::lock_guard<std::mutex> lock(clientsMutex);
 				clients[clientSocket] = username;
 			}
-			sendUserListUpdate();
+			sendUsersListUpdate();
 		}
 
 		while (true)
 		{
+			if (isSocketDisconnected(clientSocket)) {
+				removeClient(clientSocket);
+				break;
+			}
 			int messageType = Helper::getMessageTypeCode(clientSocket);
 			if (messageType == MT_CLIENT_UPDATE) 
 			{
@@ -123,13 +130,11 @@ void Server::handleClientMessage(SOCKET clientSocket)
 	int messageLength = Helper::getIntPartFromSocket(clientSocket, 5);
 	if (messageLength == 0)
 	{
-		sendUserListUpdate();
+		sendUsersListUpdate();
 	}
 	else
 	{
 		std::string message = Helper::getStringPartFromSocket(clientSocket, messageLength);
-		std::cout << 1111 << targetUser << "\n";
-		std::cout << userLegnth << "   " << messageLength << "\n";
 		saveChatHistory(clients[clientSocket], targetUser, message);
 		sendChat(clientSocket, clients[clientSocket], targetUser, message);
 	}
@@ -146,12 +151,13 @@ void Server::saveChatHistory(const std::string& sender, const std::string& recei
 		file.close();
 	}
 }
-void Server::sendChat(SOCKET client,const std::string& sender, const std::string& receiver, const std::string& message)
+
+void Server::sendChat(SOCKET clientSender, const std::string& sender, const std::string& receiver, const std::string& message)
 {
 	int size = MSG_LEN_START + sender.size() + 6 + message.size();
 	std::string allUsers;
 	std::string msg = "101" + fiveNumLen(size) + "&MAGSH_MESSAGE&&Author&" + sender;
-	msg += "&DATA&" + message + twoNumLen(sender.size()) + sender;
+	msg += "&DATA&" + message;
 	{
 		std::lock_guard<std::mutex> lock(clientsMutex);
 		auto it = clients.begin();
@@ -165,17 +171,24 @@ void Server::sendChat(SOCKET client,const std::string& sender, const std::string
 			}
 		}
 	}
-	msg += fiveNumLen(allUsers.size()) + allUsers;
+	SOCKET receiverSocket = findClientSocketByUsername(receiver);
+	std::string senderMsg = twoNumLen(receiver.size()) + receiver + fiveNumLen(allUsers.size()) + allUsers;
+	std::string receiverMsg = twoNumLen(sender.size()) + sender + fiveNumLen(allUsers.size()) + allUsers;
+	std::cout <<  msg << "\n";
+	std::cout << senderMsg << "\n";
+	std::cout << receiverMsg << "\n";
 	std::lock_guard<std::mutex> lock(clientsMutex);
-	std::cout <<"\n"<< msg<<"\n";
-	Helper::sendData(client, msg);
+	Helper::sendData(clientSender, msg);//send the sender and receiver the data
+	Helper::sendData(receiverSocket, msg);
+	Helper::sendData(clientSender, senderMsg);//send the sender the chat he requsted
+	Helper::sendData(receiverSocket, receiverMsg);//send the receiver the chat with the sender
 }
 
-void Server::sendUserListUpdate() 
+void Server::sendUsersListUpdate() 
 {
-	std::lock_guard<std::mutex> lock(clientsMutex);
+	
 	if (clients.empty()) return; // Prevent crash when no clients
-
+	std::lock_guard<std::mutex> lock(clientsMutex);
 	std::string allUsers;
 	auto it = clients.begin();
 	while (it != clients.end()) 
@@ -188,34 +201,66 @@ void Server::sendUserListUpdate()
 		}
 	}
 
-	for (auto it = clients.begin(); it != clients.end(); ++it) {
+	for (auto it = clients.begin(); it != clients.end(); ++it) 
+	{
 		Helper::send_update_message_to_client(it->first, "", "", allUsers);
 	}
 	
 }
-void Server::removeClient(SOCKET clientSocket) {
+
+void Server::sendUserList(SOCKET client)
+{
+	if (clients.empty()) return; // Prevent crash when no clients
+	std::lock_guard<std::mutex> lock(clientsMutex);
+	std::string allUsers;
+	auto it = clients.begin();
+	while (it != clients.end())
+	{
+		allUsers += it->second;
+		++it;
+		if (it != clients.end())
+		{
+			allUsers += "&";//the last user should not add a & so it doesnt add a user that does not exist
+		}
+	}
+	Helper::send_update_message_to_client(client, "", "", allUsers);
+}
+
+//remove the client from the client list
+//clientSocket - the socket of the client
+void Server::removeClient(SOCKET clientSocket) 
+{
 	{
 		std::lock_guard<std::mutex> lock(clientsMutex);
 		clients.erase(clientSocket);
 	}
 	closesocket(clientSocket);
-	sendUserListUpdate();
+	sendUsersListUpdate();
 }
+
 //make and integer into five size string for example 5 -> 00005 and 15 -> 00015 or 1765 -> 01765
+//num - the number to change into string with size of five
+//return the string
 std::string Server::fiveNumLen(int num) 
 {
 	std::ostringstream oss;
 	oss << std::setw(5) << std::setfill('0') << num;
 	return oss.str();
 }
+
 //make and integer into two size string for example 5 -> 05 and 15 -> 15
+//num - the number to change into string with size of two
+//return the string
 std::string Server::twoNumLen(int num)
 {
 	std::ostringstream oss;
 	oss << std::setw(2) << std::setfill('0') << num;
 	return oss.str();
 }
+
 //find a socket by it username
+//username - the username to serch by
+//return the socket of this username
 SOCKET Server::findClientSocketByUsername(const std::string& username)
 {
 	std::lock_guard<std::mutex> lock(clientsMutex); // Ensure thread safety
@@ -225,9 +270,17 @@ SOCKET Server::findClientSocketByUsername(const std::string& username)
 		std::cout << username;
 		if (pair.second == username)
 		{
-			std::cout << "\nworked";
 			return pair.first; // Return the corresponding socket
 		}
 	}
 	return INVALID_SOCKET; 
+}
+
+bool Server::isSocketDisconnected(SOCKET socket) {
+	char buffer;
+	int result = recv(socket, &buffer, 1, MSG_PEEK);
+	if (result == 0 || (result == SOCKET_ERROR && (WSAGetLastError() == WSAECONNRESET || WSAENOTCONN))) {
+		return true;
+	}
+	return false;
 }
